@@ -1,0 +1,304 @@
+---
+title: "stats_101c_final_rmd"
+author: "Derek Wang (205152596)"
+date: "12/14/2020"
+output: pdf_document
+---
+
+# load packages
+```{r}
+library(dplyr) 
+library(randomForest)
+library(glmnet)
+```
+
+# download training and test data
+```{r}
+training <- read.csv("training.csv")
+test <- read.csv("test.csv")
+# description of training dataset
+# each row: youtube video
+# each column: features of youtube video (thumbnail image, video title, channel, other) 
+# 7242 videos/rows and 260 columns (258 predictors because id and growth_2_6 are not predictors)
+# response variable: growth_2_6 (num) = percent change in views b/w 2nd and 6th hour after publishing
+
+# description of test dataset
+# 3105 videos/rows and 259 columns 
+# excludes growth_2_6 variable because this is what we're trying to predict
+```
+
+# Data Preprocessing: Remove *id*, *PublishedDate*, all columns of 0s
+
+# Data Cleaning
+
+# 1.  Check for any NA values in training and test sets
+```{r}
+any(is.na(training))
+any(is.na(test)) # both output FALSE, so don’t need to remove any missing observations
+```
+
+#  2. Explore structure of dataset
+```{r}
+str(training) # all columns except column 2, PublishedDate, are numeric
+
+# we choose to remove id and PublishedDate from training and test sets frame as they are extra predictors (helps us to avoid overfitting)
+training_clean <- select(training, -c(1, 2))
+names(training_clean)
+test_clean <- select(test, -c(1, 2))
+names(test_clean)
+
+#lapply(training_clean, summary) # use lapply() to look at summaries for each of the variables in the training set, found that some columns contain only zero
+```
+
+#  3. Create for loop to identify the indices of empty columns (columns with only 0s)
+```{r}
+cols_of_zero <- NA
+for(i in 1:ncol(training_clean)){ # for each column in cleaned training set
+if(sum(training_clean[,i]) == 0){ # if all values in the column are 0
+cols_of_zero[i] <- i # then specify their index in cols_of_zero object
+}
+} 
+cols_of_zero
+good <- complete.cases(cols_of_zero)
+columns_to_remove <- cols_of_zero[good]
+
+# total of 12 columns of 0's to remove:
+# 164 166 176 180 184 226 228 232 234 235 239 240
+```
+
+# 4. Remove the 12 columns of 0’s
+```{r}
+training_clean <- training_clean[, -columns_to_remove]
+test_clean <- test_clean[, -columns_to_remove]
+
+ncol(training) # original training set had 260 columns
+ncol(training_clean) # training_clean has 246 columns = removed id, PublishedDate, 12 cols of 0s
+
+ncol(test) # original test set had 259 columns (excludes growth_2_6 column)
+ncol(test_clean) # test_clean has 246 columns = removed id, PublishedDate,  12 cols of 0s
+```
+
+# Step 2: Split Data into Training and Validation Sets 
+
+```{r}
+set.seed(123)
+i <- seq_len(nrow(training_clean))
+i_train <- sample(i, 3621, replace = FALSE) #50/50 split
+
+youtube_train <- training_clean[i_train, ] # training set has 3621 observations
+youtube_val <- training_clean[-i_train, ] #validation set has 3621 observations
+```
+
+# Step 3: Model 1 - Random Forest + 83 LASSO Variables
+
+# 1. Fit LASSO to extract important predictor variables
+```{r}
+set.seed(123)
+training_x <- model.matrix(growth_2_6 ~ ., data = training_clean)[, -1] # remove intercept column
+training_y <- training_clean$growth_2_6
+
+# grid of possible values for lambda
+i_exp <- seq(10, -2, length = 50) # from very large lambda to very small lambda
+grid <- 10^i_exp 
+
+lasso_mod_val <- cv.glmnet(training_x, training_y, family = "gaussian", alpha = 1, lambda = grid, standardize = TRUE, nfolds = 10)
+
+coef(lasso_mod_val) # the variables that have values in second column = important
+
+# LASSO important predictors (83 total)
+Duration + hog_1 + hog_11 + hog_78 + hog_106 + hog_116 + hog_166 + hog_182 + hog_195 + hog_215 + hog_241 + hog_279 + hog_295 + hog_304 + hog_316 + hog_351 + hog_359 + hog_402 + hog_454 + hog_476 + hog_492 + hog_640 + hog_641 + hog_649 + hog_665 + hog_668 + hog_675 + hog_702 + hog_705 + hog_716 + hog_738 + hog_755 + hog_791 + hog_797 + hog_815 + hog_832 + hog_849 + hog_855 + cnn_9 + cnn_10 + cnn_12 + cnn_17 + cnn_25 + cnn_36 + cnn_39 + cnn_88 + cnn_89 + max_green + mean_blue + doc2vec_0 + doc2vec_2 + doc2vec_3 + doc2vec_4 + doc2vec_6 + doc2vec_7 + doc2vec_10 + doc2vec_11 + doc2vec_12 + doc2vec_13 + doc2vec_15 + doc2vec_17 + punc_num_..1 + punc_num_..3 + punc_num_..8 +  punc_num_..11 +  punc_num_..14 +  punc_num_..15 +  punc_num_..21 +  punc_num_..28 + num_words + num_chars + num_stopwords + num_uppercase_chars + num_uppercase_words + num_digit_chars + Num_Subscribers_Base_low_mid + Num_Views_Base_low_mid + Num_Views_Base_mid_high + avg_growth_low + avg_growth_low_mid + avg_growth_mid_high + count_vids_low + count_vids_low_mid
+```
+
+# 2. Fit Random Forest Model (mtry = 83/3) to Training Data (N = 1000)
+
+# Fit on youtube_train to compare to youtube_val in order to calculate the RMSE 
+```{r}
+rf_lasso <- randomForest(growth_2_6~ Duration + hog_1 + hog_11 + hog_78 + hog_106 + hog_116 + hog_166 + hog_182 
+                         + hog_195 + hog_215+ hog_241 + hog_279 + hog_295 + hog_304 + hog_316 + hog_351 + hog_359 + hog_402 
+                         + hog_454 + hog_476 + hog_492 + hog_640 + hog_641 + hog_649 + hog_665 + hog_668 + hog_675 + hog_702 +
+                           hog_705 + hog_716 + hog_738 + hog_755 + hog_791 + hog_797 + hog_815 + hog_832 + hog_849 + hog_855 +
+                           cnn_9 + cnn_10 + cnn_12 + cnn_17 + cnn_25 + cnn_36 + cnn_39 + cnn_88 + cnn_89 + max_green + mean_blue +
+                           doc2vec_0 + doc2vec_2 + doc2vec_3 + doc2vec_4 + doc2vec_6 + doc2vec_7 + doc2vec_10 + doc2vec_11 +
+                           doc2vec_12 + doc2vec_13 + doc2vec_15 + doc2vec_17 + punc_num_..1 + punc_num_..3 + punc_num_..8 + 
+                           punc_num_..11 +  punc_num_..14 +  punc_num_..15 +  punc_num_..21 +  punc_num_..28 + num_words +
+                           num_chars + num_stopwords + num_uppercase_chars + num_uppercase_words + num_digit_chars +
+                           Num_Subscribers_Base_low_mid + Num_Views_Base_low_mid + Num_Views_Base_mid_high + avg_growth_low +
+                           avg_growth_low_mid + avg_growth_mid_high + count_vids_low + count_vids_low_mid, 
+                         data = youtube_train, 
+                         mtry = 83/3, 
+                         ntree = 700, 
+                         importance = T)
+
+# Run predictions on validation set
+rf_pred <- predict(rf_lasso, youtube_val)
+
+# Calculate RMSE
+sqrt(mean((youtube_val$growth_2_6 - rf_pred)^2))
+
+# validation RMSE = 1.605992
+```
+
+# 3. Fit Random Forest Model w/ 83 LASSO Variables on full Training Set 
+```{r}
+rf_lasso.final <- randomForest(growth_2_6~Duration + hog_1 + hog_11 + hog_78 + hog_106 + hog_116 + hog_166 + hog_182 + hog_195 +
+                                 hog_215 + hog_241 + hog_279 + hog_295 + hog_304 + hog_316 + hog_351 + hog_359 + hog_402 +
+                                 hog_454 + hog_476 + hog_492 + hog_640 + hog_641 + hog_649 + hog_665 + hog_668 + hog_675 + 
+                                 hog_702 + hog_705 + hog_716 + hog_738 + hog_755 + hog_791 + hog_797 + hog_815 + hog_832 + 
+                                 hog_849 + hog_855 + cnn_9 + cnn_10 + cnn_12 + cnn_17 + cnn_25 + cnn_36 + cnn_39 + cnn_88 + 
+                                 cnn_89 + max_green + mean_blue + doc2vec_0 + doc2vec_2 + doc2vec_3 + doc2vec_4 + doc2vec_6 +
+                                 doc2vec_7 + doc2vec_10 + doc2vec_11 + doc2vec_12 + doc2vec_13 + doc2vec_15 + doc2vec_17 +
+                                 punc_num_..1 + punc_num_..3 + punc_num_..8 +  punc_num_..11 +  punc_num_..14 +  punc_num_..15 + 
+                                 punc_num_..21 +  punc_num_..28 + num_words + num_chars + num_stopwords + num_uppercase_chars +
+                                 num_uppercase_words + num_digit_chars + Num_Subscribers_Base_low_mid + Num_Views_Base_low_mid +
+                                 Num_Views_Base_mid_high + avg_growth_low + avg_growth_low_mid + avg_growth_mid_high +
+                                 count_vids_low + count_vids_low_mid, 
+                               data = training_clean, 
+                               mtry = 83/3, 
+                               ntree = 1000,
+                               importance = T)
+
+# predictions for growth_2_6
+rf_pred_test <- predict(rf_lasso.final, test[, -247])
+
+# output .csv submission file with just id and our predictions of growth_2_6
+submission5_ap <- data.frame("id" = test$id, "growth_2_6" = rf_pred_test)
+write.csv(submission5_ap, file = "submission5_ap.csv", row.names = FALSE)
+```
+# Step 4: Model 2 - Bagging + 83 LASSO Variables
+
+# 1. Using the same 83 important LASSO variables as above, fit bagging model on training set and predict with validation set (N = 500) 
+```{r}
+bag_mod_val <- randomForest(growth_2_6 ~ Duration + hog_1 + hog_11 + hog_78 + hog_106 + hog_116 + hog_166 + hog_182 + hog_195 + hog_215 + hog_241 + hog_279 + hog_295 + hog_304 + hog_316 + hog_351 + hog_359 + hog_402 + hog_454 + hog_476 + hog_492 + hog_640 + hog_641 + hog_649 + hog_665 + hog_668 + hog_675 + hog_702 + hog_705 + hog_716 + hog_738 + hog_755 + hog_791 + hog_797 + hog_815 + hog_832 + hog_849 + hog_855 + cnn_9 + cnn_10 + cnn_12 + cnn_17 + cnn_25 + cnn_36 + cnn_39 + cnn_88 + cnn_89 + max_green + mean_blue + doc2vec_0 + doc2vec_2 + doc2vec_3 + doc2vec_4 + doc2vec_6 + doc2vec_7 + doc2vec_10 + doc2vec_11 + doc2vec_12 + doc2vec_13 + doc2vec_15 + doc2vec_17 + punc_num_..1 + punc_num_..3 + punc_num_..8 +  punc_num_..11 +  punc_num_..14 +  punc_num_..15 +  punc_num_..21 +  punc_num_..28 + num_words + num_chars + num_stopwords + num_uppercase_chars + num_uppercase_words + num_digit_chars + Num_Subscribers_Base_low_mid + Num_Views_Base_low_mid + Num_Views_Base_mid_high + avg_growth_low + avg_growth_low_mid + avg_growth_mid_high + count_vids_low + count_vids_low_mid, data = youtube_train, mtry = 83, ntree = 500, importance = TRUE)
+
+# make predictions on validation set
+bag_preds_val <- predict(bag_mod, youtube_val)
+
+# compute validation RMSE
+val_RMSE <- sqrt(mean((bag_preds_val - youtube_val$growth_2_6)^2))
+val_RMSE
+
+# validation RMSE = 1.580627
+```
+
+# 2. Fit the same bagging model with full training_clean set to make predictions on final test set
+```{r}
+bag_mod_test <- randomForest(growth_2_6 ~ Duration + hog_1 + hog_11 + hog_78 + hog_106 + hog_116 + hog_166 + hog_182 + hog_195 + hog_215 + hog_241 + hog_279 + hog_295 + hog_304 + hog_316 + hog_351 + hog_359 + hog_402 + hog_454 + hog_476 + hog_492 + hog_640 + hog_641 + hog_649 + hog_665 + hog_668 + hog_675 + hog_702 + hog_705 + hog_716 + hog_738 + hog_755 + hog_791 + hog_797 + hog_815 + hog_832 + hog_849 + hog_855 + cnn_9 + cnn_10 + cnn_12 + cnn_17 + cnn_25 + cnn_36 + cnn_39 + cnn_88 + cnn_89 + max_green + mean_blue + doc2vec_0 + doc2vec_2 + doc2vec_3 + doc2vec_4 + doc2vec_6 + doc2vec_7 + doc2vec_10 + doc2vec_11 + doc2vec_12 + doc2vec_13 + doc2vec_15 + doc2vec_17 + punc_num_..1 + punc_num_..3 + punc_num_..8 +  punc_num_..11 +  punc_num_..14 +  punc_num_..15 +  punc_num_..21 +  punc_num_..28 + num_words + num_chars + num_stopwords + num_uppercase_chars + num_uppercase_words + num_digit_chars + Num_Subscribers_Base_low_mid + Num_Views_Base_low_mid + Num_Views_Base_mid_high + avg_growth_low + avg_growth_low_mid + avg_growth_mid_high + count_vids_low + count_vids_low_mid, data = training_clean, mtry = 83, ntree = 500, importance = TRUE)
+
+# make predictions on test set 
+bag_preds_test <- predict(bag_mod_test, test_clean)
+
+# create csv file for kaggle submission 
+t_sub_3 <- data.frame("id" = test$id, "growth_2_6" = bag_preds_test)
+write.csv(t_sub_3, file = "t_sub_3.csv", row.names = FALSE)
+```
+
+# Step 5: Model 3 - Bagging + 48 Variables Bagging (%IncMSE of 6%) 
+
+# 1. Determine variable importance using bagging 
+
+#Fit bagging model with 500 trees on full cleaned training set. Then, identify the most important predictors from this model 
+```{r}
+set.seed(123)
+bag_mod_vars <- randomForest(growth_2_6 ~ ., data = training_clean, mtry = 245, ntree = 500, importance = TRUE) #mtry = 245 because training_clean has 246 columns (incl. growth_2_6)
+
+# make our object (class: randomForest) a data frame so we can manipulate it
+important_variables <- as.data.frame(importance(bag_mod_vars))
+
+# order the importance from greatest to least
+sorted_important_variables <- important_variables[order(important_variables[, 1], decreasing = TRUE),]
+
+#choose variables above %IncMSE of 6% 
+above_6_percent <- sorted_important_variables[sorted_important_variables[, 1] > 6, ]
+above_6_percent_names <- above_6_percent[, 0]
+above_6_percent_names # input these predictors into the model in the next code chunk
+
+# note: there are 40 important predictors that we want to include in our model 
+
+# 2. Fit model using bagging and N = 500, predict on validation data
+
+bag_mod_val.1 <- randomForest(growth_2_6 ~ Num_Views_Base_mid_high + avg_growth_low_mid + cnn_10 + avg_growth_low	+ cnn_86 + Num_Subscribers_Base_low_mid + cnn_89 + Num_Subscribers_Base_mid_high + views_2_hours + cnn_25 + cnn_12	+ avg_growth_mid_high + cnn_17 + count_vids_low_mid + punc_num_..21 + count_vids_mid_high + num_digit_chars + cnn_88+ cnn_68 + num_uppercase_chars + Duration	+ cnn_19 + hog_183 + punc_num_..28 + mean_green + mean_pixel_val + punc_num_..12 + hog_341 + count_vids_low + num_chars + hog_454 + sd_blue + punc_num_..1 + num_words + mean_blue + mean_red + doc2vec_10 + sd_green + hog_452 + hog_40, data = youtube_train, mtry = 40, ntree = 500, importance = TRUE)
+
+bag_preds_val.1 <- predict(bag_mod_val.1, youtube_val)
+
+# compute validation RMSE
+val_RMSE.1 <- sqrt(mean((bag_preds_val.1 - youtube_val$growth_2_6)^2))
+val_RMSE.1
+
+# val_RMSE.1 = 1.524178
+```
+
+# Step 6: Model 4 - Bagging + 32 Variables Bagging (%IncMSE of 8%) 
+
+# 1. Extract important variables using a threshold of  %IncMSE of 8% 
+# Use importance_variables data frame from earlier 
+```{r}
+important_variables <- as.data.frame(importance(bag_mod_vars))
+
+# order the importance from greatest to least
+sorted_important_variables <- important_variables[order(important_variables[, 1], decreasing = TRUE),]
+
+above_8_percent <- sorted_important_variables[sorted_important_variables[, 1] > 8,]
+above_8_percent_names <- above_8_percent[, 0]
+above_8_percent_names # input these predictors into the model in the next code chunk
+
+# note: there are 32 important predictors 
+```
+
+# code for the plot showing the different %IncMSE for each predictor
+```{r}
+barplotdata_names <- as.data.frame(above_8_percent[,0])
+percent_IncMSE <- above_8_percent[,1]
+barplotdata<- cbind(barplotdata_names, percent_IncMSE)
+barplotdata
+
+plot(barplotdata)
+
+library(data.table)
+a <- setDT(barplotdata, keep.rownames = TRUE)[]
+
+dose <- unlist(a[,1])
+Percent_IncMSE <- unlist(a[,2])
+
+#Turn your 'treatment' column into a character vector
+dose <- as.character(dose)
+#Then turn it back into a factor with the levels in the correct order
+dose <- factor(dose, levels=unique(dose))
+
+# library(ggplot2)
+# Basic line plot with points
+ggplot(data = a, aes(x=dose, y=len, xlab("yes"),group=1)) +
+  geom_line()+
+  geom_point() + theme(axis.text.x = element_text(angle = 35))+
+  labs(title = "%IncMSE For Each Important Predictor*", x = "Predictor", y = "%IncMSE") 
+```
+
+# 2. Fit final bagging model on 32 predictors (8% %IncMSE threshold) on 500 trees --  fit on validation set
+```{r}
+set.seed(321)
+bag_mod_val <- randomForest(growth_2_6 ~ Num_Views_Base_mid_high + avg_growth_low_mid + cnn_10 + avg_growth_low + cnn_86 + Num_Subscribers_Base_low_mid+ cnn_89 + Num_Subscribers_Base_mid_high + views_2_hours + cnn_25 + cnn_12 + avg_growth_mid_high + cnn_17 + count_vids_low_mid + punc_num_..21 + count_vids_mid_high + num_digit_chars + cnn_88 + cnn_68 + num_uppercase_chars + Duration + cnn_19 + hog_183 + punc_num_..28 + mean_green	+ mean_pixel_val + punc_num_..12 + hog_341 + count_vids_low + num_chars + hog_454 + sd_blue, data = youtube_train, mtry = 32, ntree = 500, importance = TRUE)
+
+bag_preds_val <- predict(bag_mod_val, youtube_val)
+
+# compute validation RMSE
+val_RMSE <- sqrt(mean((bag_preds_val - youtube_val$growth_2_6)^2))
+val_RMSE
+
+#val_RMSE = 1.520741
+```
+
+# Step 7: Fit final bagging model on 32 predictors (8% %IncMSE threshold) on 500 trees --  fit on test data (our final submission)
+```{r}
+# Fit final bagging model with 32 important predictor variables (%IncMSE 8%), and N = 500 on full, cleaned training dataset. 
+
+set.seed(321)
+bag_mod_test <- randomForest(growth_2_6 ~ Num_Views_Base_mid_high + avg_growth_low_mid + cnn_10 + avg_growth_low + cnn_86 + Num_Subscribers_Base_low_mid+ cnn_89 + Num_Subscribers_Base_mid_high + views_2_hours + cnn_25 + cnn_12 + avg_growth_mid_high + cnn_17 + count_vids_low_mid + punc_num_..21 + count_vids_mid_high + num_digit_chars + cnn_88 + cnn_68 + num_uppercase_chars + Duration + cnn_19 + hog_183 + punc_num_..28 + mean_green + mean_pixel_val + punc_num_..12 + hog_341 + count_vids_low + num_chars + hog_454 + sd_blue, data = training_clean, mtry = 32, ntree = 500, importance = TRUE)
+
+#Predict on test dataset
+bag_preds_test <- predict(bag_mod_test, test_clean)
+
+# create csv file for kaggle submission 
+a_sub_10 <- data.frame("id" = test$id, "growth_2_6" = bag_preds_test)
+write.csv(a_sub_10, file = "a_sub_10.csv", row.names = FALSE)
+```
+
+
